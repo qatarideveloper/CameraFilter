@@ -37,9 +37,16 @@
 
 // إعادة رسم الشبكة فوراً بعد تغيير الفلتر (بدل انتظار لمسة المستخدم)
 static void CFRefreshGrid(id vm) {
+    // يمنع كراش عند إضافة/حذف صورة والفلتر شغّال (assert على predicate الفلتر المخصّص)
+    @try { [vm setValue:@YES forKey:@"ignoreFilterPredicateAssert"]; } @catch (__unused id e) {}
     if ([vm respondsToSelector:@selector(_setNeedsUpdate)]) [vm _setNeedsUpdate];
     PXUpdater *up = [vm respondsToSelector:@selector(updater)] ? [vm updater] : nil;
-    if ([up respondsToSelector:@selector(updateIfNeeded)]) [up updateIfNeeded]; // فرّغ الآن
+    // لا تجبر التحديث إذا المُحدِّث مشغول (تفادي re-entrancy = كراش عند الضغط السريع)
+    BOOL busy = NO;
+    @try { busy = [[up valueForKey:@"isPerformingUpdates"] boolValue]; } @catch (__unused id e) {}
+    if (!busy && [up respondsToSelector:@selector(updateIfNeeded)]) {
+        @try { [up updateIfNeeded]; } @catch (__unused id e) {}
+    }
 }
 @interface PXPhotosGridActionPerformer : NSObject
 @property (nonatomic, readonly) PXPhotosViewModel *viewModel;
