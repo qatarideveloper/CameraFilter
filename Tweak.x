@@ -43,6 +43,10 @@ static NSString *CFCachePath(void) {
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/CameraFilterCache.plist"];
 }
 
+// عدّادات تشخيص مؤقّتة
+static long gDbgAuth = -1, gDbgAll = -1, gDbgImg = -1;
+static NSString *gDbgErr = nil;
+
 @interface CFCameraIndex : NSObject
 @property (atomic, strong) NSMutableDictionary<NSString*,NSNumber*> *cache; // localIdentifier -> 1/0
 @property (atomic, assign) BOOL building;
@@ -113,23 +117,26 @@ static BOOL CFAssetIsCamera(PHAsset *asset) {
     self.building = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         @try {
-            PHFetchOptions *fo = [PHFetchOptions new];
-            fo.predicate = [NSPredicate predicateWithFormat:@"mediaType == %d", PHAssetMediaTypeImage];
-            PHFetchResult *r = [PHAsset fetchAssetsWithOptions:fo];
+            gDbgAuth = (long)[PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
+            PHFetchResult *r = [PHAsset fetchAssetsWithOptions:nil]; // كل الأصول بلا predicate
+            gDbgAll = (long)r.count;
             NSMutableDictionary *cache = self.cache;
-            __block int newCount = 0;
+            __block int newCount = 0, imgCount = 0;
             [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *stop) {
                 @autoreleasepool {
+                    if (a.mediaType != PHAssetMediaTypeImage) return; // صور فقط (بالكود)
+                    imgCount++;
                     NSString *lid = a.localIdentifier;
-                    if (!lid || cache[lid] != nil) return;    // مفهرَس مسبقاً
+                    if (!lid || cache[lid] != nil) return;
                     BOOL cam = CFAssetIsCamera(a);
                     cache[lid] = @(cam);
                     newCount++;
-                    if (newCount % 200 == 0) [self save];     // حفظ دوري
+                    if (newCount % 200 == 0) [self save];
                 }
             }];
+            gDbgImg = (long)imgCount;
             [self save];
-        } @catch (__unused NSException *ex) {}
+        } @catch (NSException *ex) { gDbgErr = ex.reason ?: ex.name; }
         self.building = NO;
         dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(); });
     });
@@ -198,7 +205,8 @@ static void CFShowDebug(CFCameraIndex *idx, NSArray *uuids, void (^then)(void)) 
         if (v.boolValue) { cam++; if (!sampleLid) sampleLid = k; } else non++;
     }];
     NSString *msg = [NSString stringWithFormat:
-        @"مفهرَس: %d\nكاميرا: %d | غير: %d\nUUID المُرسل: %@\nlocalId: %@\nعدد uuids: %lu",
+        @"auth: %ld | كل الأصول: %ld | صور: %ld\nخطأ: %@\nمفهرَس: %d | كاميرا: %d | غير: %d\nUUID: %@\nlocalId: %@ | عدد: %lu",
+        gDbgAuth, gDbgAll, gDbgImg, gDbgErr ?: @"—",
         cam + non, cam, non, uuids.firstObject ?: @"(فاضي)", sampleLid ?: @"—", (unsigned long)uuids.count];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindowScene *scene = nil;
