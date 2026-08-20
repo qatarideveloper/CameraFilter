@@ -62,11 +62,11 @@ static void CFRefreshGrid(id vm) {
 static NSString *CFCachePath(void) {
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/CameraFilterUUIDs.plist"];
 }
+// احتياط: HEIC/HEIF = صور كاميرا حصراً. (لا نضيف mov لأنه يمسك أي فيديو حتى المحمّل)
 static BOOL CFUTIIsCamera(NSString *uti) {
     return uti.length && (
-        [uti caseInsensitiveCompare:@"public.heic"] == NSOrderedSame ||             // صور HEIC
-        [uti caseInsensitiveCompare:@"public.heif"] == NSOrderedSame ||             // صور HEIF
-        [uti caseInsensitiveCompare:@"com.apple.quicktime-movie"] == NSOrderedSame); // فيديو آيفون (.mov/HEVC)
+        [uti caseInsensitiveCompare:@"public.heic"] == NSOrderedSame ||
+        [uti caseInsensitiveCompare:@"public.heif"] == NSOrderedSame);
 }
 static NSString *CFUUIDFromLocalId(NSString *lid) {
     return [lid componentsSeparatedByString:@"/"].firstObject; // "UUID/L0/001" -> "UUID"
