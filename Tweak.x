@@ -25,6 +25,17 @@
 @property (nonatomic, readonly) PXCuratedLibraryViewModel *viewModel;
 @end
 
+// مسار الألبومات (PXPhotosGrid)
+@interface PXPhotosViewModel : NSObject
+@property (nonatomic, readonly) PXContentFilterState *contentFilterState;
+- (void)setContentFilterState:(id)state;
+@end
+
+@interface PXPhotosGridActionPerformer : NSObject
+@property (nonatomic, readonly) PXPhotosViewModel *viewModel;
+@property (nonatomic, readonly) PXContentFilterState *currentContentFilterState;
+@end
+
 // ============================================================
 //  المُفهرِس: يحسب أي الصور مصوّرة بكاميرا Apple ويخزّنها بكاش
 // ============================================================
@@ -180,26 +191,26 @@ static void CFHideHUD(void) {
 }
 
 // ============================================================
-//  تطبيق الفلتر على الشبكة الأصلية
+//  محرّك تطبيق الفلتر (مشترك بين المكتبة والألبومات)
 // ============================================================
-static void CFApplyCameraFilter(PXCuratedLibraryViewModel *vm) {
-    if (!vm) return;
-    // تبديل: إذا مفعّل أصلاً -> إلغاء
-    PXContentFilterState *cur = vm.currentContentFilterState;
-    if (cur && cur.uuids.count > 0) {
-        [vm resetAllPhotosContentFilterState];
+// current: الحالة الحالية | copyBase: نسخة قابلة للتعديل | applyState: تطبيقها | resetFilter: إلغاء
+static void CFRunCameraFilter(PXContentFilterState *current,
+                              PXContentFilterState *(^copyBase)(void),
+                              void (^applyState)(PXContentFilterState *)) {
+    // تبديل: إذا مفعّل أصلاً بصور الكاميرا -> إلغاء
+    if (current && current.uuids.count > 0) {
+        PXContentFilterState *st = copyBase();
+        st.uuids = nil;
+        dispatch_async(dispatch_get_main_queue(), ^{ applyState(st); });
         return;
     }
     CFCameraIndex *idx = [CFCameraIndex shared];
     void (^apply)(void) = ^{
         NSArray *uuids = [idx cameraUUIDs];
-        PXContentFilterState *base = vm.allPhotosContentFilterState ?: vm.currentContentFilterState;
-        PXContentFilterState *st = [base copy];
+        PXContentFilterState *st = copyBase();
         if (!st) return;
         st.uuids = uuids;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [vm userDidSetAllPhotosContentFilterState:st];
-        });
+        dispatch_async(dispatch_get_main_queue(), ^{ applyState(st); });
     };
     if (idx.cache.count > 0 && !idx.building) {
         apply();
@@ -209,28 +220,53 @@ static void CFApplyCameraFilter(PXCuratedLibraryViewModel *vm) {
     }
 }
 
+// يضيف عنصر «صور الكاميرا» داخل قائمة تصفية
+static id CFAppendCameraItem(id orig, BOOL on, void (^handler)(void)) {
+    if (![orig isKindOfClass:UIMenu.class]) return orig;
+    UIAction *cam = [UIAction actionWithTitle:@"صور الكاميرا"
+                                        image:[UIImage systemImageNamed:@"camera"]
+                                   identifier:@"com.qatar.camerafilter.action"
+                                      handler:^(__kindof UIAction *a) { handler(); }];
+    if (on) cam.state = UIMenuElementStateOn;
+    UIMenu *m = (UIMenu *)orig;
+    return [m menuByReplacingChildren:[m.children arrayByAddingObject:cam]];
+}
+
 // ============================================================
-//  حقن العنصر في قائمة «تصفية»
+//  حقن العنصر — مسار المكتبة (CuratedLibrary)
 // ============================================================
 %hook PXCuratedLibraryShowFiltersMenuActionPerformer
 - (id)menuElement {
     id orig = %orig;
     PXCuratedLibraryViewModel *vm = ((PXCuratedLibraryActionPerformer *)self).viewModel;
-    if (!vm || ![orig isKindOfClass:UIMenu.class]) return orig;
-
+    if (!vm) return orig;
     __weak PXCuratedLibraryViewModel *wvm = vm;
-    UIImage *img = [UIImage systemImageNamed:@"camera"];
-    UIAction *cam = [UIAction actionWithTitle:@"صور الكاميرا"
-                                        image:img
-                                   identifier:@"com.qatar.camerafilter.action"
-                                      handler:^(__kindof UIAction *a) {
-        CFApplyCameraFilter(wvm);
-    }];
-    PXContentFilterState *cur = vm.currentContentFilterState;
-    if (cur && cur.uuids.count > 0) cam.state = UIMenuElementStateOn;
+    BOOL on = (vm.currentContentFilterState.uuids.count > 0);
+    return CFAppendCameraItem(orig, on, ^{
+        PXCuratedLibraryViewModel *v = wvm; if (!v) return;
+        CFRunCameraFilter(v.currentContentFilterState,
+            ^{ return (PXContentFilterState *)[(v.allPhotosContentFilterState ?: v.currentContentFilterState) copy]; },
+            ^(PXContentFilterState *st){ [v userDidSetAllPhotosContentFilterState:st]; });
+    });
+}
+%end
 
-    UIMenu *m = (UIMenu *)orig;
-    return [m menuByReplacingChildren:[m.children arrayByAddingObject:cam]];
+// ============================================================
+//  حقن العنصر — مسار الألبومات (PXPhotosGrid)
+// ============================================================
+%hook PXPhotosGridShowFiltersMenuActionPerformer
+- (id)menuElement {
+    id orig = %orig;
+    PXPhotosViewModel *vm = ((PXPhotosGridActionPerformer *)self).viewModel;
+    if (!vm) return orig;
+    __weak PXPhotosViewModel *wvm = vm;
+    BOOL on = (vm.contentFilterState.uuids.count > 0);
+    return CFAppendCameraItem(orig, on, ^{
+        PXPhotosViewModel *v = wvm; if (!v) return;
+        CFRunCameraFilter(v.contentFilterState,
+            ^{ return (PXContentFilterState *)[v.contentFilterState copy]; },
+            ^(PXContentFilterState *st){ [v setContentFilterState:st]; });
+    });
 }
 %end
 
