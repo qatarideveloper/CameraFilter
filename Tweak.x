@@ -53,6 +53,7 @@ static void CFRefreshGrid(id vm) {
 @end
 @interface PHAsset (CFPrivate)
 @property (nonatomic, readonly) NSString *uniformTypeIdentifier; // نوع الملف بلا قراءة بيانات
++ (id)fetchAssetsFromCameraSinceDate:(NSDate *)date options:(PHFetchOptions *)options; // أصول الكاميرا (كل التنسيقات)
 @end
 
 // ============================================================
@@ -91,23 +92,39 @@ static NSString *CFUUIDFromLocalId(NSString *lid) {
     self.building = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSMutableArray *out = [NSMutableArray array];
-        BOOL predicateOK = NO;
-        // (1) الطريقة السريعة: استعلام واحد يفلتر HEIC/HEIF بقاعدة البيانات
+        BOOL primaryOK = NO;
+        // (1) الأفضل: دالة آبل «أصول الكاميرا» — كل التنسيقات، تستبعد الشاشة/المحمّل، لحظية
         @try {
             PHFetchOptions *fo = [PHFetchOptions new];
             if (lib) fo.photoLibrary = lib;
-            fo.predicate = [NSPredicate predicateWithFormat:
-                @"uniformTypeIdentifier == %@ OR uniformTypeIdentifier == %@ OR uniformTypeIdentifier == %@",
-                @"public.heic", @"public.heif", @"com.apple.quicktime-movie"];
-            PHFetchResult *r = [PHAsset fetchAssetsWithOptions:fo];
-            [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *st) {
-                NSString *u = CFUUIDFromLocalId(a.localIdentifier); if (u.length) [out addObject:u];
-            }];
-            predicateOK = YES;
-        } @catch (__unused NSException *ex) { predicateOK = NO; }
+            if ([PHAsset respondsToSelector:@selector(fetchAssetsFromCameraSinceDate:options:)]) {
+                PHFetchResult *r = [PHAsset fetchAssetsFromCameraSinceDate:[NSDate distantPast] options:fo];
+                [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *st) {
+                    NSString *u = CFUUIDFromLocalId(a.localIdentifier); if (u.length) [out addObject:u];
+                }];
+                if (out.count > 0) primaryOK = YES;
+            }
+        } @catch (__unused NSException *ex) { primaryOK = NO; }
 
-        // (2) fallback لو الاستعلام غير مدعوم: لفّة واحدة بلا عمليات إضافية لكل صورة
-        if (!predicateOK || out.count == 0) {
+        // (2) fallback: استعلام على النوع HEIC/HEIF/mov
+        if (!primaryOK) {
+            @try {
+                PHFetchOptions *fo = [PHFetchOptions new];
+                if (lib) fo.photoLibrary = lib;
+                fo.predicate = [NSPredicate predicateWithFormat:
+                    @"uniformTypeIdentifier == %@ OR uniformTypeIdentifier == %@ OR uniformTypeIdentifier == %@",
+                    @"public.heic", @"public.heif", @"com.apple.quicktime-movie"];
+                PHFetchResult *r = [PHAsset fetchAssetsWithOptions:fo];
+                NSMutableArray *p2 = [NSMutableArray array];
+                [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *st) {
+                    NSString *u = CFUUIDFromLocalId(a.localIdentifier); if (u.length) [p2 addObject:u];
+                }];
+                if (p2.count > 0) { out = p2; primaryOK = YES; }
+            } @catch (__unused NSException *ex) {}
+        }
+
+        // (3) fallback أخير: لفّة يدوية على النوع
+        if (!primaryOK) {
             @try {
                 PHFetchOptions *fo = [PHFetchOptions new];
                 if (lib) fo.photoLibrary = lib;
