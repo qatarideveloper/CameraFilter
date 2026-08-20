@@ -10,6 +10,6 @@ TWEAK_NAME = CameraFilter
 
 CameraFilter_FILES = Tweak.x
 CameraFilter_CFLAGS = -fobjc-arc
-CameraFilter_FRAMEWORKS = UIKit Photos ImageIO CoreGraphics
+CameraFilter_FRAMEWORKS = UIKit Photos
 
 include $(THEOS)/makefiles/tweak.mk
