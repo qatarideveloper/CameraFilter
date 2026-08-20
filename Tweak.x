@@ -12,6 +12,12 @@
 @property (nonatomic) BOOL favorite;
 @property (nonatomic) BOOL edited;
 @property (nonatomic, readonly) BOOL isFiltering;
+@property (nonatomic, readonly) PHPhotoLibrary *photoLibrary; // مكتبة التطبيق (multi-library)
+@end
+
+// PHFetchOptions.photoLibrary خاص — يربط الجلب بمكتبة محددة
+@interface PHFetchOptions (CFPrivate)
+@property (nonatomic, retain) PHPhotoLibrary *photoLibrary;
 @end
 
 @interface PXCuratedLibraryViewModel : NSObject
@@ -45,14 +51,14 @@ static NSString *CFCachePath(void) {
 
 // عدّادات تشخيص مؤقّتة
 static long gDbgAuth = -1, gDbgAll = -1, gDbgImg = -1;
-static NSString *gDbgErr = nil;
+static NSString *gDbgErr = nil, *gDbgResErr = nil;
 
 @interface CFCameraIndex : NSObject
 @property (atomic, strong) NSMutableDictionary<NSString*,NSNumber*> *cache; // localIdentifier -> 1/0
 @property (atomic, assign) BOOL building;
 + (instancetype)shared;
 - (NSArray<NSString*> *)cameraUUIDs;
-- (void)buildIncremental:(void(^)(void))completion;
+- (void)buildWithLibrary:(PHPhotoLibrary *)lib completion:(void(^)(void))completion;
 @end
 
 @implementation CFCameraIndex
@@ -107,18 +113,21 @@ static BOOL CFAssetIsCamera(PHAsset *asset) {
             completionHandler:^(NSError *e) { dispatch_semaphore_signal(sem); }];
         dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)));
         return CFMakeIsApple(buf);
-    } @catch (__unused NSException *ex) {
+    } @catch (NSException *ex) {
+        if (!gDbgResErr) gDbgResErr = ex.reason ?: ex.name;
         return NO;
     }
 }
 
-- (void)buildIncremental:(void(^)(void))completion {
+- (void)buildWithLibrary:(PHPhotoLibrary *)lib completion:(void(^)(void))completion {
     if (self.building) { if (completion) completion(); return; }
     self.building = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         @try {
             gDbgAuth = (long)[PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite];
-            PHFetchResult *r = [PHAsset fetchAssetsWithOptions:nil]; // كل الأصول بلا predicate
+            PHFetchOptions *fo = [PHFetchOptions new];
+            if (lib) fo.photoLibrary = lib;          // ربط الجلب بمكتبة التطبيق (multi-library)
+            PHFetchResult *r = [PHAsset fetchAssetsWithOptions:fo];
             gDbgAll = (long)r.count;
             NSMutableDictionary *cache = self.cache;
             __block int newCount = 0, imgCount = 0;
@@ -205,9 +214,9 @@ static void CFShowDebug(CFCameraIndex *idx, NSArray *uuids, void (^then)(void)) 
         if (v.boolValue) { cam++; if (!sampleLid) sampleLid = k; } else non++;
     }];
     NSString *msg = [NSString stringWithFormat:
-        @"auth: %ld | كل الأصول: %ld | صور: %ld\nخطأ: %@\nمفهرَس: %d | كاميرا: %d | غير: %d\nUUID: %@\nlocalId: %@ | عدد: %lu",
-        gDbgAuth, gDbgAll, gDbgImg, gDbgErr ?: @"—",
-        cam + non, cam, non, uuids.firstObject ?: @"(فاضي)", sampleLid ?: @"—", (unsigned long)uuids.count];
+        @"auth: %ld | كل الأصول: %ld | صور: %ld\nخطأ الجلب: %@\nخطأ القراءة: %@\nمفهرَس: %d | كاميرا: %d | غير: %d\nUUID: %@\nعدد uuids: %lu",
+        gDbgAuth, gDbgAll, gDbgImg, gDbgErr ?: @"—", gDbgResErr ?: @"—",
+        cam + non, cam, non, uuids.firstObject ?: @"(فاضي)", (unsigned long)uuids.count];
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindowScene *scene = nil;
         for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
@@ -229,6 +238,7 @@ static void CFShowDebug(CFCameraIndex *idx, NSArray *uuids, void (^then)(void)) 
 // ============================================================
 // current: الحالة الحالية | copyBase: نسخة قابلة للتعديل | applyState: تطبيقها | resetFilter: إلغاء
 static void CFRunCameraFilter(PXContentFilterState *current,
+                              PHPhotoLibrary *lib,
                               PXContentFilterState *(^copyBase)(void),
                               void (^applyState)(PXContentFilterState *)) {
     // تبديل: إذا مفعّل أصلاً بصور الكاميرا -> إلغاء
@@ -252,7 +262,7 @@ static void CFRunCameraFilter(PXContentFilterState *current,
         apply();
     } else {
         CFShowHUD(@"جاري فهرسة صور الكاميرا…");
-        [idx buildIncremental:^{ CFHideHUD(); apply(); }];
+        [idx buildWithLibrary:lib completion:^{ CFHideHUD(); apply(); }];
     }
 }
 
@@ -280,7 +290,8 @@ static id CFAppendCameraItem(id orig, BOOL on, void (^handler)(void)) {
     BOOL on = (vm.currentContentFilterState.uuids.count > 0);
     return CFAppendCameraItem(orig, on, ^{
         PXCuratedLibraryViewModel *v = wvm; if (!v) return;
-        CFRunCameraFilter(v.currentContentFilterState,
+        PHPhotoLibrary *lib = v.currentContentFilterState.photoLibrary ?: v.allPhotosContentFilterState.photoLibrary;
+        CFRunCameraFilter(v.currentContentFilterState, lib,
             ^{ return (PXContentFilterState *)[(v.allPhotosContentFilterState ?: v.currentContentFilterState) copy]; },
             ^(PXContentFilterState *st){ [v userDidSetAllPhotosContentFilterState:st]; });
     });
@@ -299,7 +310,8 @@ static id CFAppendCameraItem(id orig, BOOL on, void (^handler)(void)) {
     BOOL on = (vm.contentFilterState.uuids.count > 0);
     return CFAppendCameraItem(orig, on, ^{
         PXPhotosViewModel *v = wvm; if (!v) return;
-        CFRunCameraFilter(v.contentFilterState,
+        PHPhotoLibrary *lib = v.contentFilterState.photoLibrary;
+        CFRunCameraFilter(v.contentFilterState, lib,
             ^{ return (PXContentFilterState *)[v.contentFilterState copy]; },
             ^(PXContentFilterState *st){ [v setContentFilterState:st]; });
     });
