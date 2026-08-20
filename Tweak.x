@@ -54,51 +54,71 @@ static NSString *CFCachePath(void) {
     [self.cache writeToFile:CFCachePath() atomically:YES];
 }
 
-// يقرأ EXIF ويتأكد Make == Apple (سكرين شوت وغير الكاميرا تُستبعد)
-static BOOL CFAssetIsCamera(PHAsset *asset) {
-    if (asset.mediaSubtypes & PHAssetMediaSubtypePhotoScreenshot) return NO; // تخطٍّ رخيص
-
-    __block BOOL isCam = NO;
-    PHImageRequestOptions *opt = [PHImageRequestOptions new];
-    opt.synchronous = YES;
-    opt.networkAccessAllowed = NO;
-    opt.version = PHImageRequestOptionsVersionUnadjusted;
-    [[PHImageManager defaultManager] requestImageDataAndOrientationForAsset:asset
-        options:opt
-        resultHandler:^(NSData *data, NSString *uti, CGImagePropertyOrientation o, NSDictionary *info) {
-            if (!data.length) return;
-            CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
-            if (!src) return;
-            NSDictionary *props = (__bridge_transfer NSDictionary *)
-                CGImageSourceCopyPropertiesAtIndex(src, 0, NULL);
-            NSDictionary *tiff = props[(__bridge NSString*)kCGImagePropertyTIFFDictionary];
-            NSString *make = tiff[(__bridge NSString*)kCGImagePropertyTIFFMake];
-            if ([make caseInsensitiveCompare:@"Apple"] == NSOrderedSame) isCam = YES;
-            CFRelease(src);
-        }];
+// قراءة متدفّقة لأول جزء من الملف فقط (EXIF بالبداية) — ذاكرة قليلة وبلا PHImageManager
+static BOOL CFMakeIsApple(NSData *buf) {
+    if (buf.length < 64) return NO;
+    CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)buf,
+        (__bridge CFDictionaryRef)@{(__bridge id)kCGImageSourceShouldCache:@NO});
+    if (!src) return NO;
+    BOOL isCam = NO;
+    NSDictionary *props = (__bridge_transfer NSDictionary *)CGImageSourceCopyPropertiesAtIndex(src, 0, NULL);
+    NSDictionary *tiff = props[(__bridge NSString*)kCGImagePropertyTIFFDictionary];
+    NSString *make = tiff[(__bridge NSString*)kCGImagePropertyTIFFMake];
+    if (make && [make caseInsensitiveCompare:@"Apple"] == NSOrderedSame) isCam = YES;
+    CFRelease(src);
     return isCam;
+}
+
+static BOOL CFAssetIsCamera(PHAsset *asset) {
+    @try {
+        if (asset.mediaSubtypes & PHAssetMediaSubtypePhotoScreenshot) return NO; // تخطٍّ رخيص
+        PHAssetResource *photoRes = nil;
+        for (PHAssetResource *r in [PHAssetResource assetResourcesForAsset:asset]) {
+            if (r.type == PHAssetResourceTypePhoto) { photoRes = r; break; }
+        }
+        if (!photoRes) return NO;
+
+        __block NSMutableData *buf = [NSMutableData data];
+        __block BOOL enough = NO;
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        PHAssetResourceRequestOptions *o = [PHAssetResourceRequestOptions new];
+        o.networkAccessAllowed = NO;
+        [[PHAssetResourceManager defaultManager] requestDataForAssetResource:photoRes options:o
+            dataReceivedHandler:^(NSData *chunk) {
+                if (enough) return;              // تجاهل الباقي بعد ما نجمع كفاية
+                [buf appendData:chunk];
+                if (buf.length >= 512 * 1024) enough = YES; // سقف ٥١٢ك.ب
+            }
+            completionHandler:^(NSError *e) { dispatch_semaphore_signal(sem); }];
+        dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)));
+        return CFMakeIsApple(buf);
+    } @catch (__unused NSException *ex) {
+        return NO;
+    }
 }
 
 - (void)buildIncremental:(void(^)(void))completion {
     if (self.building) { if (completion) completion(); return; }
     self.building = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        PHFetchOptions *fo = [PHFetchOptions new];
-        fo.predicate = [NSPredicate predicateWithFormat:@"mediaType == %d", PHAssetMediaTypeImage];
-        PHFetchResult *r = [PHAsset fetchAssetsWithOptions:fo];
-        NSMutableDictionary *cache = self.cache;
-        __block int newCount = 0;
-        [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *stop) {
-            @autoreleasepool {
-                NSString *lid = a.localIdentifier;
-                if (cache[lid] != nil) return;            // مفهرَس مسبقاً
-                BOOL cam = CFAssetIsCamera(a);
-                cache[lid] = @(cam);
-                newCount++;
-                if (newCount % 200 == 0) [self save];     // حفظ دوري
-            }
-        }];
-        [self save];
+        @try {
+            PHFetchOptions *fo = [PHFetchOptions new];
+            fo.predicate = [NSPredicate predicateWithFormat:@"mediaType == %d", PHAssetMediaTypeImage];
+            PHFetchResult *r = [PHAsset fetchAssetsWithOptions:fo];
+            NSMutableDictionary *cache = self.cache;
+            __block int newCount = 0;
+            [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *stop) {
+                @autoreleasepool {
+                    NSString *lid = a.localIdentifier;
+                    if (!lid || cache[lid] != nil) return;    // مفهرَس مسبقاً
+                    BOOL cam = CFAssetIsCamera(a);
+                    cache[lid] = @(cam);
+                    newCount++;
+                    if (newCount % 200 == 0) [self save];     // حفظ دوري
+                }
+            }];
+            [self save];
+        } @catch (__unused NSException *ex) {}
         self.building = NO;
         dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(); });
     });
@@ -183,7 +203,6 @@ static void CFApplyCameraFilter(PXCuratedLibraryViewModel *vm) {
     };
     if (idx.cache.count > 0 && !idx.building) {
         apply();
-        [idx buildIncremental:nil]; // تحديث بالخلفية لأي صور جديدة
     } else {
         CFShowHUD(@"جاري فهرسة صور الكاميرا…");
         [idx buildIncremental:^{ CFHideHUD(); apply(); }];
@@ -215,9 +234,4 @@ static void CFApplyCameraFilter(PXCuratedLibraryViewModel *vm) {
 }
 %end
 
-// فهرسة مبكّرة عند فتح التطبيق حتى تكون جاهزة
-%ctor {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [[CFCameraIndex shared] buildIncremental:nil];
-    });
-}
+// لا فهرسة تلقائية — تُبنى فقط عند الطلب (أول ضغطة على «صور الكاميرا»)
