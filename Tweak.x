@@ -11,9 +11,14 @@
 @property (nonatomic, readonly) PHPhotoLibrary *photoLibrary;
 @end
 
+@interface PXUpdater : NSObject
+- (void)updateIfNeeded;   // يفرّغ التحديثات المعلّقة فوراً
+@end
+
 @interface PXCuratedLibraryViewModel : NSObject   // تبويب «المكتبة»
 @property (nonatomic, copy) PXContentFilterState *allPhotosContentFilterState;
 @property (nonatomic, readonly) PXContentFilterState *currentContentFilterState;
+@property (nonatomic, readonly) PXUpdater *updater;
 - (void)userDidSetAllPhotosContentFilterState:(id)state;
 - (void)_setNeedsUpdate;
 - (void)_invalidateAssetsDataSourceManager;
@@ -24,6 +29,7 @@
 
 @interface PXPhotosViewModel : NSObject           // الألبومات
 @property (nonatomic, readonly) PXContentFilterState *contentFilterState;
+@property (nonatomic, readonly) PXUpdater *updater;
 - (void)setContentFilterState:(id)state;
 - (void)_setNeedsUpdate;
 - (void)_invalidateAssetsDataSourceManager;
@@ -31,8 +37,9 @@
 
 // إعادة رسم الشبكة فوراً بعد تغيير الفلتر (بدل انتظار لمسة المستخدم)
 static void CFRefreshGrid(id vm) {
-    if ([vm respondsToSelector:@selector(_invalidateAssetsDataSourceManager)]) [vm _invalidateAssetsDataSourceManager];
     if ([vm respondsToSelector:@selector(_setNeedsUpdate)]) [vm _setNeedsUpdate];
+    PXUpdater *up = [vm respondsToSelector:@selector(updater)] ? [vm updater] : nil;
+    if ([up respondsToSelector:@selector(updateIfNeeded)]) [up updateIfNeeded]; // فرّغ الآن
 }
 @interface PXPhotosGridActionPerformer : NSObject
 @property (nonatomic, readonly) PXPhotosViewModel *viewModel;
