@@ -202,7 +202,11 @@ static id CFAppendCameraItem(id orig, BOOL on, void (^handler)(void)) {
                                    identifier:@"com.qatar.camerafilter.action"
                                       handler:^(__kindof UIAction *a) { handler(); }];
     if (on) cam.state = UIMenuElementStateOn;
-    return [(UIMenu *)orig menuByReplacingChildren:[((UIMenu *)orig).children arrayByAddingObject:cam]];
+    UIMenu *m = (UIMenu *)orig;
+    NSMutableArray *kids = [m.children mutableCopy];
+    NSUInteger idx = kids.count > 0 ? kids.count - 1 : 0; // قبل «كل الفلاتر» (آخر عنصر)
+    [kids insertObject:cam atIndex:idx];
+    return [m menuByReplacingChildren:kids];
 }
 
 // ============================================================
