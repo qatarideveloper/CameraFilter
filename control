@@ -1,0 +1,9 @@
+Package: com.qatar.camerafilter
+Name: CameraFilter
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: يضيف خيار «صور الكاميرا» في قائمة تصفية تطبيق الصور — يعرض الصور المصوّرة بكاميرا آيفون فقط
+Maintainer: Abdulla
+Author: Abdulla
+Section: Tweaks
+Depends: mobilesubstrate
