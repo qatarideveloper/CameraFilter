@@ -15,6 +15,8 @@
 @property (nonatomic, copy) PXContentFilterState *allPhotosContentFilterState;
 @property (nonatomic, readonly) PXContentFilterState *currentContentFilterState;
 - (void)userDidSetAllPhotosContentFilterState:(id)state;
+- (void)_setNeedsUpdate;
+- (void)_invalidateAssetsDataSourceManager;
 @end
 @interface PXCuratedLibraryActionPerformer : NSObject
 @property (nonatomic, readonly) PXCuratedLibraryViewModel *viewModel;
@@ -23,7 +25,15 @@
 @interface PXPhotosViewModel : NSObject           // الألبومات
 @property (nonatomic, readonly) PXContentFilterState *contentFilterState;
 - (void)setContentFilterState:(id)state;
+- (void)_setNeedsUpdate;
+- (void)_invalidateAssetsDataSourceManager;
 @end
+
+// إعادة رسم الشبكة فوراً بعد تغيير الفلتر (بدل انتظار لمسة المستخدم)
+static void CFRefreshGrid(id vm) {
+    if ([vm respondsToSelector:@selector(_invalidateAssetsDataSourceManager)]) [vm _invalidateAssetsDataSourceManager];
+    if ([vm respondsToSelector:@selector(_setNeedsUpdate)]) [vm _setNeedsUpdate];
+}
 @interface PXPhotosGridActionPerformer : NSObject
 @property (nonatomic, readonly) PXPhotosViewModel *viewModel;
 @end
@@ -209,7 +219,7 @@ static id CFAppendCameraItem(id orig, BOOL on, void (^handler)(void)) {
         PHPhotoLibrary *lib = v.currentContentFilterState.photoLibrary ?: v.allPhotosContentFilterState.photoLibrary;
         CFRunCameraFilter(v.currentContentFilterState, lib,
             ^{ return (PXContentFilterState *)[(v.allPhotosContentFilterState ?: v.currentContentFilterState) copy]; },
-            ^(PXContentFilterState *st){ [v userDidSetAllPhotosContentFilterState:st]; });
+            ^(PXContentFilterState *st){ [v userDidSetAllPhotosContentFilterState:st]; CFRefreshGrid(v); });
     });
 }
 %end
@@ -226,7 +236,7 @@ static id CFAppendCameraItem(id orig, BOOL on, void (^handler)(void)) {
         PHPhotoLibrary *lib = v.contentFilterState.photoLibrary;
         CFRunCameraFilter(v.contentFilterState, lib,
             ^{ return (PXContentFilterState *)[v.contentFilterState copy]; },
-            ^(PXContentFilterState *st){ [v setContentFilterState:st]; });
+            ^(PXContentFilterState *st){ [v setContentFilterState:st]; CFRefreshGrid(v); });
     });
 }
 %end
