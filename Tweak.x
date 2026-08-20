@@ -53,7 +53,7 @@ static void CFRefreshGrid(id vm) {
 @end
 @interface PHAsset (CFPrivate)
 @property (nonatomic, readonly) NSString *uniformTypeIdentifier; // نوع الملف بلا قراءة بيانات
-+ (id)fetchAssetsFromCameraSinceDate:(NSDate *)date options:(PHFetchOptions *)options; // أصول الكاميرا (كل التنسيقات)
+@property (nonatomic, readonly) NSString *px_make;               // صانع الكاميرا (Apple) من قاعدة البيانات
 @end
 
 // ============================================================
@@ -92,52 +92,27 @@ static NSString *CFUUIDFromLocalId(NSString *lid) {
     self.building = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSMutableArray *out = [NSMutableArray array];
-        BOOL primaryOK = NO;
-        // (1) الأفضل: دالة آبل «أصول الكاميرا» — كل التنسيقات، تستبعد الشاشة/المحمّل، لحظية
+        // لفّة واحدة: كاميرا = (Make == Apple) أو نوع كاميرا (HEIC/HEIF/mov) — مستقل عن التنسيق
         @try {
             PHFetchOptions *fo = [PHFetchOptions new];
             if (lib) fo.photoLibrary = lib;
-            if ([PHAsset respondsToSelector:@selector(fetchAssetsFromCameraSinceDate:options:)]) {
-                PHFetchResult *r = [PHAsset fetchAssetsFromCameraSinceDate:[NSDate distantPast] options:fo];
-                [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *st) {
-                    NSString *u = CFUUIDFromLocalId(a.localIdentifier); if (u.length) [out addObject:u];
-                }];
-                if (out.count > 0) primaryOK = YES;
-            }
-        } @catch (__unused NSException *ex) { primaryOK = NO; }
-
-        // (2) fallback: استعلام على النوع HEIC/HEIF/mov
-        if (!primaryOK) {
-            @try {
-                PHFetchOptions *fo = [PHFetchOptions new];
-                if (lib) fo.photoLibrary = lib;
-                fo.predicate = [NSPredicate predicateWithFormat:
-                    @"uniformTypeIdentifier == %@ OR uniformTypeIdentifier == %@ OR uniformTypeIdentifier == %@",
-                    @"public.heic", @"public.heif", @"com.apple.quicktime-movie"];
-                PHFetchResult *r = [PHAsset fetchAssetsWithOptions:fo];
-                NSMutableArray *p2 = [NSMutableArray array];
-                [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *st) {
-                    NSString *u = CFUUIDFromLocalId(a.localIdentifier); if (u.length) [p2 addObject:u];
-                }];
-                if (p2.count > 0) { out = p2; primaryOK = YES; }
-            } @catch (__unused NSException *ex) {}
-        }
-
-        // (3) fallback أخير: لفّة يدوية على النوع
-        if (!primaryOK) {
-            @try {
-                PHFetchOptions *fo = [PHFetchOptions new];
-                if (lib) fo.photoLibrary = lib;
-                PHFetchResult *r = [PHAsset fetchAssetsWithOptions:fo];
-                NSMutableArray *fb = [NSMutableArray array];
-                [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *st) {
+            PHFetchResult *r = [PHAsset fetchAssetsWithOptions:fo];
+            [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *st) {
+                @autoreleasepool {
                     if (a.mediaSubtypes & PHAssetMediaSubtypePhotoScreenshot) return; // سكرين شوت
-                    NSString *uti = nil; @try { uti = a.uniformTypeIdentifier; } @catch (__unused id e) {}
-                    if (CFUTIIsCamera(uti)) { NSString *u = CFUUIDFromLocalId(a.localIdentifier); if (u.length) [fb addObject:u]; }
-                }];
-                if (fb.count > 0) out = fb;
-            } @catch (__unused NSException *ex) {}
-        }
+                    BOOL cam = NO;
+                    @try {                                    // Make من قاعدة البيانات (كل التنسيقات)
+                        NSString *mk = a.px_make;
+                        if (mk && [mk caseInsensitiveCompare:@"Apple"] == NSOrderedSame) cam = YES;
+                    } @catch (__unused id e) {}
+                    if (!cam) {                               // احتياط: نوع الملف
+                        NSString *uti = nil; @try { uti = a.uniformTypeIdentifier; } @catch (__unused id e) {}
+                        cam = CFUTIIsCamera(uti);
+                    }
+                    if (cam) { NSString *u = CFUUIDFromLocalId(a.localIdentifier); if (u.length) [out addObject:u]; }
+                }
+            }];
+        } @catch (__unused NSException *ex) {}
 
         self.uuids = out;
         [out writeToFile:CFCachePath() atomically:YES];

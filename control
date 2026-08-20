@@ -1,6 +1,6 @@
 Package: com.qatar.camerafilter
 Name: CameraFilter
-Version: 0.8.0
+Version: 0.8.1
 Architecture: iphoneos-arm64
 Description: يضيف «من الكاميرا» لقائمة تصفية تطبيق الصور — صور وفيديوهات آيفون فقط
 Maintainer: Abdulla
