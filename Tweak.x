@@ -190,6 +190,32 @@ static void CFHideHUD(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ gHUD.hidden = YES; gHUD = nil; });
 }
 
+// تشخيص مؤقّت: يعرض أرقام الفهرسة وصيغة الـUUID الفعلية
+static UIWindow *gAlertWin;
+static void CFShowDebug(CFCameraIndex *idx, NSArray *uuids, void (^then)(void)) {
+    __block int cam = 0, non = 0; __block NSString *sampleLid = nil;
+    [idx.cache enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSNumber *v, BOOL *s) {
+        if (v.boolValue) { cam++; if (!sampleLid) sampleLid = k; } else non++;
+    }];
+    NSString *msg = [NSString stringWithFormat:
+        @"مفهرَس: %d\nكاميرا: %d | غير: %d\nUUID المُرسل: %@\nlocalId: %@\nعدد uuids: %lu",
+        cam + non, cam, non, uuids.firstObject ?: @"(فاضي)", sampleLid ?: @"—", (unsigned long)uuids.count];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindowScene *scene = nil;
+        for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
+            if ([s isKindOfClass:UIWindowScene.class] && s.activationState == UISceneActivationStateForegroundActive) { scene = (UIWindowScene*)s; break; }
+        UIWindow *w = scene ? [[UIWindow alloc] initWithWindowScene:scene] : [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+        w.windowLevel = UIWindowLevelStatusBar + 200;
+        w.rootViewController = [UIViewController new];
+        w.hidden = NO; gAlertWin = w;
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"CameraFilter تشخيص" message:msg preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"تطبيق" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            gAlertWin.hidden = YES; gAlertWin = nil; if (then) then();
+        }]];
+        [w.rootViewController presentViewController:ac animated:YES completion:nil];
+    });
+}
+
 // ============================================================
 //  محرّك تطبيق الفلتر (مشترك بين المكتبة والألبومات)
 // ============================================================
@@ -210,7 +236,9 @@ static void CFRunCameraFilter(PXContentFilterState *current,
         PXContentFilterState *st = copyBase();
         if (!st) return;
         st.uuids = uuids;
-        dispatch_async(dispatch_get_main_queue(), ^{ applyState(st); });
+        CFShowDebug(idx, uuids, ^{   // تشخيص مؤقّت — يُزال بعد ما نعرف الصيغة
+            dispatch_async(dispatch_get_main_queue(), ^{ applyState(st); });
+        });
     };
     if (idx.cache.count > 0 && !idx.building) {
         apply();
