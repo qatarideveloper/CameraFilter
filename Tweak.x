@@ -20,6 +20,11 @@
 @property (nonatomic, retain) PHPhotoLibrary *photoLibrary;
 @end
 
+// PHAsset.uniformTypeIdentifier خاص — نوع الملف بلا قراءة بيانات
+@interface PHAsset (CFPrivate)
+- (NSString *)uniformTypeIdentifier;
+@end
+
 @interface PXCuratedLibraryViewModel : NSObject
 @property (nonatomic, copy) PXContentFilterState *allPhotosContentFilterState;
 @property (nonatomic, readonly) PXContentFilterState *currentContentFilterState;
@@ -75,44 +80,26 @@ static NSString *gDbgErr = nil, *gDbgResErr = nil;
     [self.cache writeToFile:CFCachePath() atomically:YES];
 }
 
-// قراءة متدفّقة لأول جزء من الملف فقط (EXIF بالبداية) — ذاكرة قليلة وبلا PHImageManager
-static BOOL CFMakeIsApple(NSData *buf) {
-    if (buf.length < 64) return NO;
-    CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)buf,
-        (__bridge CFDictionaryRef)@{(__bridge id)kCGImageSourceShouldCache:@NO});
-    if (!src) return NO;
-    BOOL isCam = NO;
-    NSDictionary *props = (__bridge_transfer NSDictionary *)CGImageSourceCopyPropertiesAtIndex(src, 0, NULL);
-    NSDictionary *tiff = props[(__bridge NSString*)kCGImagePropertyTIFFDictionary];
-    NSString *make = tiff[(__bridge NSString*)kCGImagePropertyTIFFMake];
-    if (make && [make caseInsensitiveCompare:@"Apple"] == NSOrderedSame) isCam = YES;
-    CFRelease(src);
-    return isCam;
+// كشف سريع بلا قراءة بيانات: نوع الملف HEIC/HEIF = كاميرا آيفون غالباً
+static BOOL CFUTIIsCamera(NSString *uti) {
+    if (!uti.length) return NO;
+    return ([uti caseInsensitiveCompare:@"public.heic"] == NSOrderedSame ||
+            [uti caseInsensitiveCompare:@"public.heif"] == NSOrderedSame);
 }
 
 static BOOL CFAssetIsCamera(PHAsset *asset) {
     @try {
-        if (asset.mediaSubtypes & PHAssetMediaSubtypePhotoScreenshot) return NO; // تخطٍّ رخيص
-        PHAssetResource *photoRes = nil;
+        if (asset.mediaSubtypes & PHAssetMediaSubtypePhotoScreenshot) return NO; // سكرين شوت
+        // 1) UTI مباشرة من PHAsset (خاص) — أسرع، بلا قراءة بيانات
+        NSString *uti = nil;
+        if ([asset respondsToSelector:@selector(uniformTypeIdentifier)])
+            uti = [asset uniformTypeIdentifier];
+        if (uti.length) return CFUTIIsCamera(uti);
+        // 2) fallback: نوع أول resource صورة (رخيص، بلا بيانات بكسل)
         for (PHAssetResource *r in [PHAssetResource assetResourcesForAsset:asset]) {
-            if (r.type == PHAssetResourceTypePhoto) { photoRes = r; break; }
+            if (r.type == PHAssetResourceTypePhoto) return CFUTIIsCamera(r.uniformTypeIdentifier);
         }
-        if (!photoRes) return NO;
-
-        __block NSMutableData *buf = [NSMutableData data];
-        __block BOOL enough = NO;
-        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-        PHAssetResourceRequestOptions *o = [PHAssetResourceRequestOptions new];
-        o.networkAccessAllowed = NO;
-        [[PHAssetResourceManager defaultManager] requestDataForAssetResource:photoRes options:o
-            dataReceivedHandler:^(NSData *chunk) {
-                if (enough) return;              // تجاهل الباقي بعد ما نجمع كفاية
-                [buf appendData:chunk];
-                if (buf.length >= 512 * 1024) enough = YES; // سقف ٥١٢ك.ب
-            }
-            completionHandler:^(NSError *e) { dispatch_semaphore_signal(sem); }];
-        dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)));
-        return CFMakeIsApple(buf);
+        return NO;
     } @catch (NSException *ex) {
         if (!gDbgResErr) gDbgResErr = ex.reason ?: ex.name;
         return NO;
