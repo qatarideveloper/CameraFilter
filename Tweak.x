@@ -62,8 +62,10 @@ static NSString *CFCachePath(void) {
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/CameraFilterUUIDs.plist"];
 }
 static BOOL CFUTIIsCamera(NSString *uti) {
-    return uti.length && ([uti caseInsensitiveCompare:@"public.heic"] == NSOrderedSame ||
-                          [uti caseInsensitiveCompare:@"public.heif"] == NSOrderedSame);
+    return uti.length && (
+        [uti caseInsensitiveCompare:@"public.heic"] == NSOrderedSame ||             // صور HEIC
+        [uti caseInsensitiveCompare:@"public.heif"] == NSOrderedSame ||             // صور HEIF
+        [uti caseInsensitiveCompare:@"com.apple.quicktime-movie"] == NSOrderedSame); // فيديو آيفون (.mov/HEVC)
 }
 static NSString *CFUUIDFromLocalId(NSString *lid) {
     return [lid componentsSeparatedByString:@"/"].firstObject; // "UUID/L0/001" -> "UUID"
@@ -95,7 +97,8 @@ static NSString *CFUUIDFromLocalId(NSString *lid) {
             PHFetchOptions *fo = [PHFetchOptions new];
             if (lib) fo.photoLibrary = lib;
             fo.predicate = [NSPredicate predicateWithFormat:
-                @"uniformTypeIdentifier == %@ OR uniformTypeIdentifier == %@", @"public.heic", @"public.heif"];
+                @"uniformTypeIdentifier == %@ OR uniformTypeIdentifier == %@ OR uniformTypeIdentifier == %@",
+                @"public.heic", @"public.heif", @"com.apple.quicktime-movie"];
             PHFetchResult *r = [PHAsset fetchAssetsWithOptions:fo];
             [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *st) {
                 NSString *u = CFUUIDFromLocalId(a.localIdentifier); if (u.length) [out addObject:u];
@@ -111,8 +114,7 @@ static NSString *CFUUIDFromLocalId(NSString *lid) {
                 PHFetchResult *r = [PHAsset fetchAssetsWithOptions:fo];
                 NSMutableArray *fb = [NSMutableArray array];
                 [r enumerateObjectsUsingBlock:^(PHAsset *a, NSUInteger i, BOOL *st) {
-                    if (a.mediaType != PHAssetMediaTypeImage) return;
-                    if (a.mediaSubtypes & PHAssetMediaSubtypePhotoScreenshot) return;
+                    if (a.mediaSubtypes & PHAssetMediaSubtypePhotoScreenshot) return; // سكرين شوت
                     NSString *uti = nil; @try { uti = a.uniformTypeIdentifier; } @catch (__unused id e) {}
                     if (CFUTIIsCamera(uti)) { NSString *u = CFUUIDFromLocalId(a.localIdentifier); if (u.length) [fb addObject:u]; }
                 }];
@@ -203,7 +205,7 @@ static void CFRunCameraFilter(PXContentFilterState *current,
 // يضيف عنصر «صور الكاميرا» داخل قائمة تصفية
 static id CFAppendCameraItem(id orig, BOOL on, void (^handler)(void)) {
     if (![orig isKindOfClass:UIMenu.class]) return orig;
-    UIAction *cam = [UIAction actionWithTitle:@"صور الكاميرا"
+    UIAction *cam = [UIAction actionWithTitle:@"من الكاميرا"
                                         image:[UIImage systemImageNamed:@"camera"]
                                    identifier:@"com.qatar.camerafilter.action"
                                       handler:^(__kindof UIAction *a) { handler(); }];
